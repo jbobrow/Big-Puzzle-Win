@@ -124,7 +124,8 @@ void loop() {
 }
 
 void setupLoop() {
-
+  bReadyToSolve = false;
+  
   byte brightness = sin8_C(map(syncTimer.getRemaining(), 0, PERIOD_DURATION, 0, 255))/4;
   if(isAlone()){
     setColor( dim( WHITE, brightness));
@@ -223,7 +224,7 @@ void playLoop() {
   // mark ourselves solved
 
   // listen for win condition
-  if(buttonSingleClicked()) {
+  if(buttonDoubleClicked()) {
     broadcastValue = COMM_WIN_GO;
   }
 
