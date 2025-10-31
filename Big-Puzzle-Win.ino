@@ -206,8 +206,10 @@ void playLoop() {
   }
 
   // listen for reset clicks (5, no more, no less)
-  if(buttonMultiClicked() && buttonClickCount() == 5) {
-    broadcastValue = COMM_SETUP_GO;
+  if(buttonMultiClicked()) {
+    if(buttonClickCount() == 5) {
+      broadcastValue = COMM_SETUP_GO;
+    }
   }
 }
 
@@ -219,8 +221,10 @@ void winLoop() {
   // Infinite Code Reveal
 
   // listen for reset clicks (5, no more, no less)
-  if(buttonMultiClicked() && buttonClickCount() == 5) {
-    broadcastValue = COMM_SETUP_GO;
+  if(buttonMultiClicked()) {
+    if(buttonClickCount() == 5) {
+      broadcastValue = COMM_SETUP_GO;
+    }
   }
 }
 
@@ -228,7 +232,7 @@ void winLoop() {
 void processIncomingPackages() {
   FOREACH_FACE(f) {
     if(myFaceColors[f] == 0 || currentNeighbors[f][0] != 0) continue; // both sides aren't ready
-    
+    // TODO: this is true for negotiation, but will prevent sharing of signature...
     if (isDatagramReadyOnFace(f)) {
       const byte* pkg = getDatagramOnFace(f);
       byte pkgType = pkg[0];
