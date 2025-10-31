@@ -71,6 +71,7 @@ Timer syncTimer;
 #define BUFFER_DURATION 200
 byte neighborSyncState[6];
 byte syncVal = 0;
+boolean bReadyToSolve = false;
 
 void setup() {
   randomize(); // initialize random numbers w/ entropy
@@ -123,6 +124,7 @@ void loop() {
 }
 
 void setupLoop() {
+
   byte brightness = sin8_C(map(syncTimer.getRemaining(), 0, PERIOD_DURATION, 0, 255))/4;
   if(isAlone()){
     setColor( dim( WHITE, brightness));
@@ -182,7 +184,27 @@ void setupLoop() {
 }
 
 void playLoop() {
-  setColor(WHITE);
+  byte brightness = sin8_C(map(syncTimer.getRemaining(), 0, PERIOD_DURATION, 0, 255));
+  setColor(dim(WHITE, brightness/2 + 127));
+
+  if(isAlone()) {
+    bReadyToSolve = true;
+  }
+  
+  if(bReadyToSolve) {
+    
+    // if face solved...
+    if(true) {
+      FOREACH_FACE(f) {
+        setColorOnFace(dim(gameColors[myFaceColors[f]], brightness),f);
+      }
+    }
+    else {
+      FOREACH_FACE(f) {
+        setColorOnFace(gameColors[myFaceColors[f]],f);
+      }
+    }
+  }
   // on entering play mode, lock in neighbors' color and signature to SOLUTION_COLOR_SIGNATURE...
   // show all white, until able to be solved
   // on isAlone() allow engage solveability
