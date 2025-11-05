@@ -239,15 +239,52 @@ void playLoop() {
   
   if(bReadyToSolve) {
     
-    // if face solved...
-    if(true) {
-      FOREACH_FACE(f) {
-        setColorOnFace(dim(gameColors[myFaceColors[f]], brightness),f);
+    // Check for new neighbors and send them our state
+    FOREACH_FACE(f) {
+      if (!isValueReceivedOnFaceExpired(f)) { // has a neighbor
+        // If this is a new neighbor (currentNeighbors was cleared), send our info
+        if (currentNeighbors[f][0] == 0) {
+          byte currentPacket[8] = {
+            PKG_COLOR_SIGNATURE,
+            myFaceColors[f],
+            mySignature[0],
+            mySignature[1],
+            mySignature[2],
+            mySignature[3],
+            mySignature[4],
+            mySignature[5]
+          };
+          sendDatagramOnFace(currentPacket, 8, f);
+        }
+      }
+      else { // neighbor disconnected
+        // Clear current neighbor data
+        currentNeighbors[f][0] = 0;
+        currentNeighbors[f][1] = 0;
+        currentNeighbors[f][2] = 0;
+        currentNeighbors[f][3] = 0;
+        currentNeighbors[f][4] = 0;
+        currentNeighbors[f][5] = 0;
+        currentNeighbors[f][6] = 0;
       }
     }
-    else {
-      FOREACH_FACE(f) {
-        setColorOnFace(gameColors[myFaceColors[f]],f);
+    
+    // Display colors with matching feedback
+    FOREACH_FACE(f) {
+      if (!isValueReceivedOnFaceExpired(f)) { // has a neighbor
+        // Check if colors match
+        if (currentNeighbors[f][0] == myFaceColors[f] && currentNeighbors[f][0] != 0) {
+          // Colors match - pulse
+          setColorOnFace(dim(gameColors[myFaceColors[f]], brightness), f);
+        }
+        else {
+          // Colors don't match - solid
+          setColorOnFace(gameColors[myFaceColors[f]], f);
+        }
+      }
+      else {
+        // No neighbor - show solid color
+        setColorOnFace(gameColors[myFaceColors[f]], f);
       }
     }
   }
@@ -362,38 +399,71 @@ void processIncomingPackages() {
 
         case PKG_COLOR_SIGNATURE:
           {
-            // In PLAY mode: Store as solution signature
+            // In PLAY mode: Handle differently based on whether we're setting up or actively playing
             if(gameMode == PLAY) {
-              // Store neighbor's color index
-              solutionNeighbors[f][0] = pkg[1];
-              // Store neighbor's signature
-              solutionNeighbors[f][1] = pkg[2];
-              solutionNeighbors[f][2] = pkg[3];
-              solutionNeighbors[f][3] = pkg[4];
-              solutionNeighbors[f][4] = pkg[5];
-              solutionNeighbors[f][5] = pkg[6];
-              solutionNeighbors[f][6] = pkg[7];
               
-              // If we haven't sent our signature to this face yet, send it now as a response
-              if (signatureState[f] == SIG_NONE) {
-                byte signaturePacket[8] = {
-                  PKG_COLOR_SIGNATURE,
-                  myFaceColors[f],
-                  mySignature[0],
-                  mySignature[1],
-                  mySignature[2],
-                  mySignature[3],
-                  mySignature[4],
-                  mySignature[5]
-                };
-                sendDatagramOnFace(signaturePacket, 8, f);
+              // During initial signature exchange (setting up solution)
+              if(signatureState[f] != SIG_RECEIVED) {
+                // Store neighbor's color index in SOLUTION
+                solutionNeighbors[f][0] = pkg[1];
+                // Store neighbor's signature in SOLUTION
+                solutionNeighbors[f][1] = pkg[2];
+                solutionNeighbors[f][2] = pkg[3];
+                solutionNeighbors[f][3] = pkg[4];
+                solutionNeighbors[f][4] = pkg[5];
+                solutionNeighbors[f][5] = pkg[6];
+                solutionNeighbors[f][6] = pkg[7];
                 
-                // Store our own color in solution
-                solutionNeighbors[f][0] = myFaceColors[f];
+                // If we haven't sent our signature to this face yet, send it now as a response
+                if (signatureState[f] == SIG_NONE) {
+                  byte signaturePacket[8] = {
+                    PKG_COLOR_SIGNATURE,
+                    myFaceColors[f],
+                    mySignature[0],
+                    mySignature[1],
+                    mySignature[2],
+                    mySignature[3],
+                    mySignature[4],
+                    mySignature[5]
+                  };
+                  sendDatagramOnFace(signaturePacket, 8, f);
+                  
+                  // Store our own color in solution
+                  solutionNeighbors[f][0] = myFaceColors[f];
+                }
+                
+                // Mark that we've received this neighbor's signature
+                signatureState[f] = SIG_RECEIVED;
               }
-              
-              // Mark that we've received this neighbor's signature
-              signatureState[f] = SIG_RECEIVED;
+              else {
+                // During active play - store in CURRENT neighbors for matching
+                currentNeighbors[f][0] = pkg[1];
+                currentNeighbors[f][1] = pkg[2];
+                currentNeighbors[f][2] = pkg[3];
+                currentNeighbors[f][3] = pkg[4];
+                currentNeighbors[f][4] = pkg[5];
+                currentNeighbors[f][5] = pkg[6];
+                currentNeighbors[f][6] = pkg[7];
+                
+                // If we received their packet but haven't sent ours yet on this reconnection, send now
+                if (currentNeighbors[f][0] != 0) {
+                  // Check if we need to send our info (we haven't sent since this reconnection)
+                  bool needToSend = true;
+                  // A simple heuristic: if they have data and we haven't replied, send
+                  // We can track this better, but for now just respond to ensure exchange
+                  byte currentPacket[8] = {
+                    PKG_COLOR_SIGNATURE,
+                    myFaceColors[f],
+                    mySignature[0],
+                    mySignature[1],
+                    mySignature[2],
+                    mySignature[3],
+                    mySignature[4],
+                    mySignature[5]
+                  };
+                  sendDatagramOnFace(currentPacket, 8, f);
+                }
+              }
             }
             // In SETUP mode: Only process after negotiation is complete
             else if(gameMode == SETUP && negotiationState[f] == NEG_COMPLETE && myFaceColors[f] != 0) {
