@@ -42,6 +42,13 @@ enum State {
   RESOLVE
 };
 
+enum NegotiationState {
+  NEG_INERT,
+  NEG_SENT,      // We sent our proposal, waiting for theirs
+  NEG_RECEIVED,  // We got their proposal, negotiation complete
+  NEG_COMPLETE   // Both sides have exchanged and agreed
+};
+
 enum Mode {
   SETUP,
   PLAY,
@@ -64,6 +71,7 @@ byte mySignature[6] = {};
 #define MAX_NEG_NUM 255
 byte negotiationState[6] = {};
 byte myNumbers[6] = {};
+byte myProposedColors[6] = {}; // FIXED: Store proposed color separately
 
 // SYNCHRONIZED CELEBRATION
 Timer syncTimer;
@@ -138,22 +146,26 @@ void setupLoop() {
   FOREACH_FACE(f) {
     if (!isValueReceivedOnFaceExpired(f)) { // a neighbor!
       if (currentNeighbors[f][0] == 0) { // color index of 0, no neighbor prior, a new neighbor!
-        if(negotiationState[f] == INERT) {
+        if(negotiationState[f] == NEG_INERT) {
           byte randNum = random(MAX_NEG_NUM);
           byte randColorIndex = 1 + random(NUM_GAME_COLORS - 1);
           byte negotiationPacket[3] = {PKG_NEGOTIATE_COLOR, randColorIndex, randNum};
           sendDatagramOnFace(negotiationPacket, 3, f);
           myNumbers[f] = randNum;
-          myFaceColors[f] = randColorIndex;
-          negotiationState[f] = GO;
+          myProposedColors[f] = randColorIndex;
+          negotiationState[f] = NEG_SENT; // FIXED: Mark that we sent our proposal
         }
       }
-      setColorOnFace(dim(gameColors[myFaceColors[f]], 255 - brightness),f);
+      // FIXED: Only display color after negotiation is fully complete on both sides
+      if(negotiationState[f] == NEG_COMPLETE && myFaceColors[f] != 0) {
+        setColorOnFace(dim(gameColors[myFaceColors[f]], 255 - brightness),f);
+      }
     }
     else { // no neighor
       myFaceColors[f] = 0;
+      myProposedColors[f] = 0;
       currentNeighbors[f][0] = 0;
-      negotiationState[f] = INERT;
+      negotiationState[f] = NEG_INERT;
     }
   }
   // DEBUG SYNC
@@ -254,8 +266,6 @@ void winLoop() {
 // ===== PACKAGE PROCESSING =====
 void processIncomingPackages() {
   FOREACH_FACE(f) {
-    if(myFaceColors[f] == 0 || currentNeighbors[f][0] != 0) continue; // both sides aren't ready
-    // TODO: this is true for negotiation, but will prevent sharing of signature...
     if (isDatagramReadyOnFace(f)) {
       const byte* pkg = getDatagramOnFace(f);
       byte pkgType = pkg[0];
@@ -264,30 +274,68 @@ void processIncomingPackages() {
 
         case PKG_NEGOTIATE_COLOR:
           {
-            byte neighborColor = pkg[1];
-            byte neighborNumber = pkg[2];
-            if(neighborNumber > myNumbers[f]) {
-              myFaceColors[f] = neighborColor;
+            // Process negotiation packet if we're in NEG_INERT or NEG_SENT state
+            if(negotiationState[f] == NEG_INERT || negotiationState[f] == NEG_SENT) {
+              byte neighborColor = pkg[1];
+              byte neighborNumber = pkg[2];
+              
+              // If we haven't sent our proposal yet, send it now
+              if(negotiationState[f] == NEG_INERT) {
+                byte randNum = random(MAX_NEG_NUM);
+                byte randColorIndex = 1 + random(NUM_GAME_COLORS - 1);
+                byte negotiationPacket[3] = {PKG_NEGOTIATE_COLOR, randColorIndex, randNum};
+                sendDatagramOnFace(negotiationPacket, 3, f);
+                myNumbers[f] = randNum;
+                myProposedColors[f] = randColorIndex;
+              }
+              
+              // Decide on final color based on who has higher number
+              if(neighborNumber > myNumbers[f]) {
+                myFaceColors[f] = neighborColor;
+              } else if(neighborNumber < myNumbers[f]) {
+                myFaceColors[f] = myProposedColors[f];
+              } else {
+                // Tie-breaker: use lower color index for consistency
+                myFaceColors[f] = (myProposedColors[f] < neighborColor) ? myProposedColors[f] : neighborColor;
+              }
+              
+              // Store agreed color
+              currentNeighbors[f][0] = myFaceColors[f];
+              negotiationState[f] = NEG_RECEIVED;
             }
-            currentNeighbors[f][0] = myFaceColors[f];
-            negotiationState[f] = INERT;
+            // If we already received their packet, mark negotiation complete
+            else if(negotiationState[f] == NEG_RECEIVED) {
+              negotiationState[f] = NEG_COMPLETE;
+            }
           }
           break;
 
         case PKG_COLOR_SIGNATURE:
-          // Store neighbor's color index
-          currentNeighbors[f][0] = pkg[1];
-          // Store neighbor's signature
-          currentNeighbors[f][1] = pkg[2];
-          currentNeighbors[f][2] = pkg[3];
-          currentNeighbors[f][3] = pkg[4];
-          currentNeighbors[f][4] = pkg[5];
-          currentNeighbors[f][5] = pkg[6];
-          currentNeighbors[f][6] = pkg[7];
+          // Only process signature packets after negotiation is complete
+          if(negotiationState[f] == NEG_COMPLETE && myFaceColors[f] != 0) {
+            // Store neighbor's color index
+            currentNeighbors[f][0] = pkg[1];
+            // Store neighbor's signature
+            currentNeighbors[f][1] = pkg[2];
+            currentNeighbors[f][2] = pkg[3];
+            currentNeighbors[f][3] = pkg[4];
+            currentNeighbors[f][4] = pkg[5];
+            currentNeighbors[f][5] = pkg[6];
+            currentNeighbors[f][6] = pkg[7];
+          }
           break;                    
       }
       
       markDatagramReadOnFace(f);
+    }
+  }
+  
+  // FIXED: Send a second packet to confirm negotiation complete
+  FOREACH_FACE(f) {
+    if(negotiationState[f] == NEG_RECEIVED) {
+      byte negotiationPacket[3] = {PKG_NEGOTIATE_COLOR, myFaceColors[f], myNumbers[f]};
+      sendDatagramOnFace(negotiationPacket, 3, f);
+      negotiationState[f] = NEG_COMPLETE;
     }
   }
 }
