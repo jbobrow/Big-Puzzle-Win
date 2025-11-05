@@ -23,7 +23,6 @@ byte secretCode[CODE_LENGTH] = {8, 6, 7, 5};  // REPLACE WITH SECRET CODE
 #define GRAPE     makeColorHSB(200,255,255) 
 #define LIME      makeColorHSB(82,255,255)
 #define BLUEBERRY makeColorHSB(160,255,255)
-#define YELLOW    makeColorHSB(42,255,255)
 #define NO_COLOR  makeColorRGB(0,0,0)
 
 Color digitColors[CODE_LENGTH] = {TANGERINE, LEMON, MINT, GRAPE};  // ARRAY OF COLORS FOR EACH DIGIT POSITION
@@ -71,7 +70,6 @@ byte broadcastValue = COMM_INERT;
 byte currentNeighbors[6][7] = {{},{},{},{},{},{}};
 byte solutionNeighbors[6][7] = {{},{},{},{},{},{}};
 byte myFaceColors[6] = {};
-byte mySignature[6] = {};
 
 #define PKG_NEGOTIATE_COLOR 0
 #define PKG_COLOR_SIGNATURE 1
@@ -247,12 +245,12 @@ void playLoop() {
           byte currentPacket[8] = {
             PKG_COLOR_SIGNATURE,
             myFaceColors[f],
-            mySignature[0],
-            mySignature[1],
-            mySignature[2],
-            mySignature[3],
-            mySignature[4],
-            mySignature[5]
+            myFaceColors[0],
+            myFaceColors[1],
+            myFaceColors[2],
+            myFaceColors[3],
+            myFaceColors[4],
+            myFaceColors[5]
           };
           sendDatagramOnFace(currentPacket, 8, f);
         }
@@ -272,9 +270,14 @@ void playLoop() {
     // Display colors with matching feedback
     FOREACH_FACE(f) {
       if (!isValueReceivedOnFaceExpired(f)) { // has a neighbor
+        // Check if this face is fully solved (signature matches solution)
+        if (isFaceSolved(f)) {
+          // Face solved - show GREEN - ONLY FOR DEBUG
+          setColorOnFace(GREEN, f);
+        }
         // Check if colors match
-        if (currentNeighbors[f][0] == myFaceColors[f] && currentNeighbors[f][0] != 0) {
-          // Colors match - pulse
+        else if (currentNeighbors[f][0] == myFaceColors[f] && currentNeighbors[f][0] != 0) {
+          // Colors match but wrong neighbor - pulse
           setColorOnFace(dim(gameColors[myFaceColors[f]], brightness), f);
         }
         else {
@@ -302,18 +305,18 @@ void playLoop() {
           byte signaturePacket[8] = {
             PKG_COLOR_SIGNATURE,
             myFaceColors[f],
-            mySignature[0],
-            mySignature[1],
-            mySignature[2],
-            mySignature[3],
-            mySignature[4],
-            mySignature[5]
+            myFaceColors[0],
+            myFaceColors[1],
+            myFaceColors[2],
+            myFaceColors[3],
+            myFaceColors[4],
+            myFaceColors[5]
           };
           sendDatagramOnFace(signaturePacket, 8, f);
           signatureState[f] = SIG_SENT;
           
           // Store our own color in solution (we know this side)
-          solutionNeighbors[f][0] = myFaceColors[f];
+          // solutionNeighbors[f][0] = myFaceColors[f];
         }
       }
       else { // neighbor disconnected
@@ -403,7 +406,7 @@ void processIncomingPackages() {
             if(gameMode == PLAY) {
               
               // During initial signature exchange (setting up solution)
-              if(signatureState[f] != SIG_RECEIVED) {
+              if(signatureState[f] != SIG_RECEIVED && !bReadyToSolve) {
                 // Store neighbor's color index in SOLUTION
                 solutionNeighbors[f][0] = pkg[1];
                 // Store neighbor's signature in SOLUTION
@@ -419,12 +422,12 @@ void processIncomingPackages() {
                   byte signaturePacket[8] = {
                     PKG_COLOR_SIGNATURE,
                     myFaceColors[f],
-                    mySignature[0],
-                    mySignature[1],
-                    mySignature[2],
-                    mySignature[3],
-                    mySignature[4],
-                    mySignature[5]
+                    myFaceColors[0],
+                    myFaceColors[1],
+                    myFaceColors[2],
+                    myFaceColors[3],
+                    myFaceColors[4],
+                    myFaceColors[5]
                   };
                   sendDatagramOnFace(signaturePacket, 8, f);
                   
@@ -454,12 +457,12 @@ void processIncomingPackages() {
                   byte currentPacket[8] = {
                     PKG_COLOR_SIGNATURE,
                     myFaceColors[f],
-                    mySignature[0],
-                    mySignature[1],
-                    mySignature[2],
-                    mySignature[3],
-                    mySignature[4],
-                    mySignature[5]
+                    myFaceColors[0],
+                    myFaceColors[1],
+                    myFaceColors[2],
+                    myFaceColors[3],
+                    myFaceColors[4],
+                    myFaceColors[5]
                   };
                   sendDatagramOnFace(currentPacket, 8, f);
                 }
@@ -633,4 +636,21 @@ byte getGameMode(byte data) {
       case COMM_WIN_GO:         return WIN;
       case COMM_WIN_RESOLVE:    return WIN;
   }
+}
+
+// Check if current neighbor signature matches solution signature for a face
+bool isFaceSolved(byte face) {
+  // Check if we have both current and solution data
+  if (currentNeighbors[face][0] == 0 || solutionNeighbors[face][0] == 0) {
+    return false;
+  }
+  
+  // Compare all 7 bytes: color index + 6 signature bytes
+  for (byte i = 0; i < 7; i++) {
+    if (currentNeighbors[face][i] != solutionNeighbors[face][i]) {
+      return false;
+    }
+  }
+  
+  return true;
 }
