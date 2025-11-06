@@ -13,6 +13,12 @@
   2025.10.30
 */
 
+// HANDICAP FOR THE PUZZLE IS SHOWING WHETHER A CONNECTION IS CORRECT
+// MODE 0 - NO HANDICAP (SAME COLORS WILL PULSE TOGETHER, DOESN'T MEAN IT IS THE CORRECT POSITION, THAT IS IT)
+// MODE 1 - A LITTLE HANDICAP (WHEN A TILE HAS ALL OF ITS CONNECTIONS CORRECT, IT TURNS FACES GREEN)
+// MODE 2 - A LOT OF HANDICAP (WHEN A FACE HAS ITS CORRECT CONNECTION, IT TURNS GREEN) 
+#define HANDICAP_MODE 0
+
 #define NUM_GAME_COLORS 4
 #define CODE_LENGTH 4 // MAKE SURE THIS MATCHES THE NUMBER OF DIGITS IN THE SECRET CODE
 byte secretCode[CODE_LENGTH] = {8, 6, 7, 5};  // REPLACE WITH SECRET CODE
@@ -87,6 +93,7 @@ Timer syncTimer;
 byte neighborSyncState[6];
 byte syncVal = 0;
 boolean bReadyToSolve = false;
+boolean bSolved = false;
 
 void setup() {
   randomize(); // initialize random numbers w/ entropy
@@ -267,12 +274,19 @@ void playLoop() {
       }
     }
     
+    bSolved = isAllFacesSolved();
+
     // Display colors with matching feedback
     FOREACH_FACE(f) {
       if (!isValueReceivedOnFaceExpired(f)) { // has a neighbor
+        // if all faces are solved
+        if (bSolved && HANDICAP_MODE == 1) {
+          // All faces solved - show GREEN - ONLY FOR EASY MODE 1
+          setColorOnFace(GREEN, f);
+        }
         // Check if this face is fully solved (signature matches solution)
-        if (isFaceSolved(f)) {
-          // Face solved - show GREEN - ONLY FOR DEBUG
+        else if (isFaceSolved(f) && HANDICAP_MODE == 2) {
+          // Face solved - show GREEN - ONLY FOR EASY MODE 2
           setColorOnFace(GREEN, f);
         }
         // Check if colors match
@@ -636,6 +650,28 @@ byte getGameMode(byte data) {
       case COMM_WIN_GO:         return WIN;
       case COMM_WIN_RESOLVE:    return WIN;
   }
+}
+
+// Check if all neighbors signatures match the solution
+bool isAllFacesSolved() {
+  // check all 6 faces to see if they are solved
+  FOREACH_FACE(f) {
+    // check facees that should be empty
+    if(solutionNeighbors[f][0] == 0) {
+      // if it is not empty, it is not solved
+      if (!isValueReceivedOnFaceExpired(f)) {
+        return false;
+      }
+      // faces that don't need checking can be skipped
+      continue;
+    }
+    // check faces that should have connections
+    if(!isFaceSolved(f)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 // Check if current neighbor signature matches solution signature for a face
