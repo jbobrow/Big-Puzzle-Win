@@ -17,7 +17,7 @@
 // MODE 0 - NO HANDICAP (SAME COLORS WILL PULSE TOGETHER, DOESN'T MEAN IT IS THE CORRECT POSITION, THAT IS IT)
 // MODE 1 - A LITTLE HANDICAP (WHEN A TILE HAS ALL OF ITS CONNECTIONS CORRECT, IT TURNS FACES GREEN)
 // MODE 2 - A LOT OF HANDICAP (WHEN A FACE HAS ITS CORRECT CONNECTION, IT TURNS GREEN) 
-#define HANDICAP_MODE 0
+#define HANDICAP_MODE 1
 
 #define NUM_GAME_COLORS 4
 #define CODE_LENGTH 4 // MAKE SURE THIS MATCHES THE NUMBER OF DIGITS IN THE SECRET CODE
@@ -39,8 +39,11 @@ Color gameColors[NUM_GAME_COLORS+1] = {NO_COLOR, TANGERINE, LEMON, MINT, GRAPE};
 #define COMM_SETUP_RESOLVE  2
 #define COMM_PLAY_GO        3
 #define COMM_PLAY_RESOLVE   4
-#define COMM_WIN_GO         5
-#define COMM_WIN_RESOLVE    6
+#define COMM_PLAY_BASE      5  // PLAY mode uses values 5-20 (base + distance)
+#define COMM_WIN_GO         21
+#define COMM_WIN_RESOLVE    22
+
+#define MAX_SOLVE_DISTANCE  15  // Maximum distance we can represent
 
 enum State {
   INERT,
@@ -69,9 +72,9 @@ enum Mode {
 
 byte signalState = INERT;
 byte gameMode = SETUP;
-byte previousGameMode = SETUP; // Track mode changes
 
 byte broadcastValue = COMM_INERT;
+byte distanceFromUnsolved = 0;  // Distance propagation for win detection
 
 byte currentNeighbors[6][7] = {{},{},{},{},{},{}};
 byte solutionNeighbors[6][7] = {{},{},{},{},{},{}};
@@ -83,7 +86,7 @@ byte myFaceColors[6] = {};
 #define MAX_NEG_NUM 255
 byte negotiationState[6] = {};
 byte myNumbers[6] = {};
-byte myProposedColors[6] = {}; // FIXED: Store proposed color separately
+byte myProposedColors[6] = {}; // Store proposed color separately
 byte signatureState[6] = {};   // Track signature exchange state per face
 
 // SYNCHRONIZED CELEBRATION
@@ -92,8 +95,7 @@ Timer syncTimer;
 #define BUFFER_DURATION 200
 byte neighborSyncState[6];
 byte syncVal = 0;
-boolean bReadyToSolve = false;
-boolean bSolved = false;
+bool bReadyToSolve = false;
 
 void setup() {
   randomize(); // initialize random numbers w/ entropy
@@ -106,22 +108,6 @@ void loop() {
 
   // keep clocks in sync
   syncLoop();
-
-  // do the thing our mode wants us to do :)
-  switch(gameMode) {
-    
-    case SETUP:
-      setupLoop();
-      break;
-
-    case PLAY:
-      playLoop();
-      break;
-    
-    case WIN:
-      winLoop();
-      break;
-  }
 
   // check our surroundings for state changes
   switch(signalState) {
@@ -139,18 +125,61 @@ void loop() {
       break;
 
   }
+
+    // do the thing our mode wants us to do :)
+  switch(gameMode) {
+    
+    case SETUP:
+      setupLoop();
+      break;
+
+    case PLAY:
+      playLoop();
+      break;
+    
+    case WIN:
+      winLoop();
+      break;
+  }
   
   // tell everyone what's up
-  byte sendData = (syncVal << 5) + (broadcastValue);
+  byte sendData;
+  
+  // Check if we're trying to change modes (GO signals)
+  bool changingModes = (broadcastValue == COMM_SETUP_GO || 
+                        broadcastValue == COMM_PLAY_GO || 
+                        broadcastValue == COMM_WIN_GO ||
+                        broadcastValue == COMM_SETUP_RESOLVE ||
+                        broadcastValue == COMM_PLAY_RESOLVE ||
+                        broadcastValue == COMM_WIN_RESOLVE);
+  
+  // Use distance encoding ONLY when in stable PLAY and not changing modes
+  if (gameMode == PLAY && signalState == INERT && !changingModes) {
+    // During stable PLAY mode, encode distance from unsolved in the broadcast value
+    sendData = (syncVal << 5) + (COMM_PLAY_BASE + distanceFromUnsolved);
+  } else {
+    // Use broadcastValue for mode changes and all other states
+    sendData = (syncVal << 5) + (broadcastValue);
+  }
   setValueSentOnAllFaces(sendData);
+
 }
 
 void setupLoop() {
-  bReadyToSolve = false;
+  bReadyToSolve = false;  // Reset ready to solve
   
   // Reset signature exchange state when in setup
   FOREACH_FACE(f) {
     signatureState[f] = SIG_NONE;
+    
+    // IMPORTANT: Clear solution neighbors from previous puzzle
+    solutionNeighbors[f][0] = 0;
+    solutionNeighbors[f][1] = 0;
+    solutionNeighbors[f][2] = 0;
+    solutionNeighbors[f][3] = 0;
+    solutionNeighbors[f][4] = 0;
+    solutionNeighbors[f][5] = 0;
+    solutionNeighbors[f][6] = 0;
   }
   
   byte brightness = sin8_C(map(syncTimer.getRemaining(), 0, PERIOD_DURATION, 0, 255))/4;
@@ -172,10 +201,10 @@ void setupLoop() {
           sendDatagramOnFace(negotiationPacket, 3, f);
           myNumbers[f] = randNum;
           myProposedColors[f] = randColorIndex;
-          negotiationState[f] = NEG_SENT; // FIXED: Mark that we sent our proposal
+          negotiationState[f] = NEG_SENT; // Mark that we sent our proposal
         }
       }
-      // FIXED: Only display color after negotiation is fully complete on both sides
+      // Only display color after negotiation is fully complete on both sides
       if(negotiationState[f] == NEG_COMPLETE && myFaceColors[f] != 0) {
         setColorOnFace(dim(gameColors[myFaceColors[f]], 255 - brightness),f);
       }
@@ -187,27 +216,6 @@ void setupLoop() {
       negotiationState[f] = NEG_INERT;
     }
   }
-  // DEBUG SYNC
-  // switch(syncVal){
-  //   case 0: setColorOnFace(RED, 0); break;
-  //   case 1: setColorOnFace(BLUE, 0); break;
-  //   case 2: setColorOnFace(GREEN, 0); break;
-  // }
-
-  // enter negotiation  
-    // negotiate color
-    // send neighbor a color and a random number
-    // listen for neighbor color and number
-      // settle on color with larger shared number
-      // end negotiation
-  // if negotiation complete, share signature  
-    // send them the color on the face they are connected to and our signature
-
-  // listen for a neighbors color and their signature
-  // save a neighbors color and signature
-  
-  // if we lose a neighbor
-  // delete our record of our neighbors' color and signature
 
   // if user doubleClicks, go to play mode
   if(buttonDoubleClicked()) {
@@ -216,6 +224,19 @@ void setupLoop() {
 }
 
 void playLoop() {
+
+  // Manual trigger win condition
+  if(buttonDoubleClicked()) {
+    broadcastValue = COMM_WIN_GO;
+  }
+
+  // listen for reset clicks (5, no more, no less)
+  if(buttonMultiClicked()) {
+    if(buttonClickCount() == 5) {
+      broadcastValue = COMM_SETUP_GO;
+    }
+  }
+
   byte brightness = sin8_C(map(syncTimer.getRemaining(), 0, PERIOD_DURATION, 0, 255));
   
   // Check if all signatures have been exchanged
@@ -274,13 +295,52 @@ void playLoop() {
       }
     }
     
-    bSolved = isAllFacesSolved();
+    // === WIN DETECTION using distance propagation ===
+    // Only run win detection if:
+    // 1. We're in stable PLAY (signalState == INERT)
+    // 2. All signatures exchanged (allSignaturesExchanged == true)
+    // 3. We haven't already detected a win
+
+    // Check if this Blink is fully solved
+    bool amISolved = isAllFacesSolved();
+
+    if (signalState == INERT && allSignaturesExchanged) {
+
+      // Propagate inverse distance from unsolved Blink
+      if (!amISolved) {
+        // I am unsolved, so distance is MAX
+        distanceFromUnsolved = MAX_SOLVE_DISTANCE;
+      } else {
+        // I am solved, check neighbors for closest unsolved
+        distanceFromUnsolved = 0;
+        FOREACH_FACE(f) {
+          if (!isValueReceivedOnFaceExpired(f)) {
+            byte neighborData = getLastValueReceivedOnFace(f);
+            byte neighborBroadcast = neighborData & 31; // Extract lower 5 bits
+            
+            // Check if neighbor is in PLAY mode with distance encoding
+            if (neighborBroadcast >= COMM_PLAY_BASE && neighborBroadcast < COMM_WIN_GO) {
+              byte neighborDistance = neighborBroadcast - COMM_PLAY_BASE;
+              if (neighborDistance > distanceFromUnsolved) {
+                distanceFromUnsolved = neighborDistance - 1;
+              }
+            }
+          }
+        }
+      }
+      
+      // Check for WIN condition: distance is 0 means no unsolved Blinks in the network
+      if (distanceFromUnsolved == 0 && amISolved) {
+        // Everyone is solved! Trigger WIN
+        broadcastValue = COMM_WIN_GO;
+      }
+    }
 
     // Display colors with matching feedback
     FOREACH_FACE(f) {
       if (!isValueReceivedOnFaceExpired(f)) { // has a neighbor
         // if all faces are solved
-        if (bSolved && HANDICAP_MODE == 1) {
+        if (amISolved && HANDICAP_MODE == 1) {
           // All faces solved - show GREEN - ONLY FOR EASY MODE 1
           setColorOnFace(GREEN, f);
         }
@@ -304,6 +364,15 @@ void playLoop() {
         setColorOnFace(gameColors[myFaceColors[f]], f);
       }
     }
+
+    // DEBUG - Show what state we're in
+    if(broadcastValue == COMM_WIN_GO) {
+      setColor(MAGENTA);  // Win detected, transitioning
+    }
+    // if(distanceFromUnsolved != 0) {
+    //     setColorOnFace(WHITE, 0);
+    // }
+
   }
   
   // Only send signatures after we're fully in PLAY mode (signalState is INERT)
@@ -338,18 +407,6 @@ void playLoop() {
       }
     }
   }
-
-  // listen for win condition
-  if(buttonDoubleClicked()) {
-    broadcastValue = COMM_WIN_GO;
-  }
-
-  // listen for reset clicks (5, no more, no less)
-  if(buttonMultiClicked()) {
-    if(buttonClickCount() == 5) {
-      broadcastValue = COMM_SETUP_GO;
-    }
-  }
 }
 
 void winLoop() {
@@ -378,6 +435,18 @@ void processIncomingPackages() {
 
         case PKG_NEGOTIATE_COLOR:
           {
+            // Only process color negotiation when in SETUP mode
+            if (gameMode != SETUP) {
+              break;  // Ignore negotiation packets when not in SETUP
+            }
+            
+            // Also check that neighbor is in SETUP mode
+            byte neighborData = getLastValueReceivedOnFace(f);
+            byte neighborMode = getGameMode(neighborData);
+            if (neighborMode != SETUP) {
+              break;  // Ignore if neighbor isn't in SETUP either
+            }
+            
             // Process negotiation packet if we're in NEG_INERT or NEG_SENT state
             if(negotiationState[f] == NEG_INERT || negotiationState[f] == NEG_SENT) {
               byte neighborColor = pkg[1];
@@ -461,6 +530,9 @@ void processIncomingPackages() {
                 currentNeighbors[f][4] = pkg[5];
                 currentNeighbors[f][5] = pkg[6];
                 currentNeighbors[f][6] = pkg[7];
+
+                // Mark that we've received this neighbor's signature
+                signatureState[f] = SIG_RECEIVED;
                 
                 // If we received their packet but haven't sent ours yet on this reconnection, send now
                 if (currentNeighbors[f][0] != 0) {
@@ -502,7 +574,7 @@ void processIncomingPackages() {
     }
   }
   
-  // FIXED: Send a second packet to confirm negotiation complete
+  // Send a second packet to confirm negotiation complete
   FOREACH_FACE(f) {
     if(negotiationState[f] == NEG_RECEIVED) {
       byte negotiationPacket[3] = {PKG_NEGOTIATE_COLOR, myFaceColors[f], myNumbers[f]};
@@ -566,13 +638,12 @@ void goLoop() {
  *
  */
 void resolveLoop() {
-  signalState = INERT;//I default to this at the start of the loop. Only if I see a problem does this not happen
+  signalState = INERT;
   broadcastValue = COMM_INERT;
 
-  //look for neighbors who have not moved to RESOLVE
   FOREACH_FACE(f) {
-    if (!isValueReceivedOnFaceExpired(f)) {//a neighbor!
-      if (getSignalState(getLastValueReceivedOnFace(f)) == GO) {//This neighbor isn't in RESOLVE. Stay in RESOLVE
+    if (!isValueReceivedOnFaceExpired(f)) {
+      if (getSignalState(getLastValueReceivedOnFace(f)) == GO) {
         signalState = RESOLVE;
         switch(gameMode) {
           case SETUP: broadcastValue = COMM_SETUP_RESOLVE; break;
@@ -629,19 +700,28 @@ byte getSyncVal(byte data) {
 }
 
 byte getSignalState(byte data) {
-    switch(data & 31) {
+    byte val = data & 31;
+    switch(val) {
       case COMM_INERT:          return INERT;
       case COMM_SETUP_GO:       return GO;
-      case COMM_PLAY_GO:        return GO;
-      case COMM_WIN_GO:         return GO;
       case COMM_SETUP_RESOLVE:  return RESOLVE;
+      case COMM_PLAY_GO:        return GO;
       case COMM_PLAY_RESOLVE:   return RESOLVE;
+      case COMM_WIN_GO:         return GO;
       case COMM_WIN_RESOLVE:    return RESOLVE;
+      default: {
+        // PLAY mode distance values (COMM_PLAY_BASE through COMM_PLAY_BASE + MAX_SOLVE_DISTANCE)
+        if (val >= COMM_PLAY_BASE && val < COMM_WIN_GO) {
+          return INERT;  // During stable PLAY with distance encoding, we're in INERT state
+        }
+        return INERT;
+      }
   }
 }
 
 byte getGameMode(byte data) {
-    switch(data & 31) {
+    byte val = data & 31;
+    switch(val) {
       case COMM_INERT:          return SETUP;
       case COMM_SETUP_GO:       return SETUP;
       case COMM_SETUP_RESOLVE:  return SETUP;
@@ -649,6 +729,13 @@ byte getGameMode(byte data) {
       case COMM_PLAY_RESOLVE:   return PLAY;
       case COMM_WIN_GO:         return WIN;
       case COMM_WIN_RESOLVE:    return WIN;
+      default: {
+        // PLAY mode distance values (COMM_PLAY_BASE through COMM_PLAY_BASE + MAX_SOLVE_DISTANCE)
+        if (val >= COMM_PLAY_BASE && val < COMM_WIN_GO) {
+          return PLAY;
+        }
+        return SETUP;
+      }
   }
 }
 
