@@ -74,7 +74,7 @@ byte signalState = INERT;
 byte gameMode = SETUP;
 
 byte broadcastValue = COMM_INERT;
-byte distanceFromUnsolved = 0;  // Distance propagation for win detection
+byte inverseDistanceFromUnsolved = 0;  // Distance propagation for win detection
 
 byte currentNeighbors[6][7] = {{},{},{},{},{},{}};
 byte solutionNeighbors[6][7] = {{},{},{},{},{},{}};
@@ -141,6 +141,13 @@ void loop() {
       winLoop();
       break;
   }
+
+  // listen for reset clicks (5, no more, no less)
+  if(buttonMultiClicked()) {
+    if(buttonClickCount() == 5) {
+      broadcastValue = COMM_SETUP_GO;
+    }
+  }
   
   // tell everyone what's up
   byte sendData;
@@ -154,9 +161,9 @@ void loop() {
                         broadcastValue == COMM_WIN_RESOLVE);
   
   // Use distance encoding ONLY when in stable PLAY and not changing modes
-  if (gameMode == PLAY && signalState == INERT && !changingModes) {
+  if (gameMode == PLAY && !changingModes) {
     // During stable PLAY mode, encode distance from unsolved in the broadcast value
-    sendData = (syncVal << 5) + (COMM_PLAY_BASE + distanceFromUnsolved);
+    sendData = (syncVal << 5) + (COMM_PLAY_BASE + inverseDistanceFromUnsolved);
   } else {
     // Use broadcastValue for mode changes and all other states
     sendData = (syncVal << 5) + (broadcastValue);
@@ -230,13 +237,6 @@ void playLoop() {
     broadcastValue = COMM_WIN_GO;
   }
 
-  // listen for reset clicks (5, no more, no less)
-  if(buttonMultiClicked()) {
-    if(buttonClickCount() == 5) {
-      broadcastValue = COMM_SETUP_GO;
-    }
-  }
-
   byte brightness = sin8_C(map(syncTimer.getRemaining(), 0, PERIOD_DURATION, 0, 255));
   
   // Check if all signatures have been exchanged
@@ -296,44 +296,39 @@ void playLoop() {
     }
     
     // === WIN DETECTION using distance propagation ===
-    // Only run win detection if:
-    // 1. We're in stable PLAY (signalState == INERT)
-    // 2. All signatures exchanged (allSignaturesExchanged == true)
-    // 3. We haven't already detected a win
 
     // Check if this Blink is fully solved
     bool amISolved = isAllFacesSolved();
 
-    if (signalState == INERT && allSignaturesExchanged) {
+    // Propagate inverse distance from unsolved Blink
+    // check neighbors for closest unsolved
+    inverseDistanceFromUnsolved = 0;
 
-      // Propagate inverse distance from unsolved Blink
-      if (!amISolved) {
-        // I am unsolved, so distance is MAX
-        distanceFromUnsolved = MAX_SOLVE_DISTANCE;
-      } else {
-        // I am solved, check neighbors for closest unsolved
-        distanceFromUnsolved = 0;
-        FOREACH_FACE(f) {
-          if (!isValueReceivedOnFaceExpired(f)) {
-            byte neighborData = getLastValueReceivedOnFace(f);
-            byte neighborBroadcast = neighborData & 31; // Extract lower 5 bits
-            
-            // Check if neighbor is in PLAY mode with distance encoding
-            if (neighborBroadcast >= COMM_PLAY_BASE && neighborBroadcast < COMM_WIN_GO) {
-              byte neighborDistance = neighborBroadcast - COMM_PLAY_BASE;
-              if (neighborDistance > distanceFromUnsolved) {
-                distanceFromUnsolved = neighborDistance - 1;
-              }
-            }
+    if (!amISolved) {
+      // I am unsolved, so distance is MAX
+      inverseDistanceFromUnsolved = MAX_SOLVE_DISTANCE;
+    }
+
+    FOREACH_FACE(f) {
+      if (!isValueReceivedOnFaceExpired(f)) {
+        byte neighborData = getLastValueReceivedOnFace(f);
+        
+        byte neighborBroadcast = neighborData & 31; // Extract lower 5 bits
+        
+        // CRITICAL: Only process if neighbor is sending valid distance data
+        if (neighborBroadcast >= COMM_PLAY_BASE && neighborBroadcast < COMM_WIN_GO) {
+          byte neighborDistance = neighborBroadcast - COMM_PLAY_BASE;
+          if (neighborDistance > inverseDistanceFromUnsolved && neighborDistance > 0) {
+            inverseDistanceFromUnsolved = neighborDistance - 1;
           }
         }
       }
-      
-      // Check for WIN condition: distance is 0 means no unsolved Blinks in the network
-      if (distanceFromUnsolved == 0 && amISolved) {
-        // Everyone is solved! Trigger WIN
-        broadcastValue = COMM_WIN_GO;
-      }
+    }   
+    
+    // Check for WIN condition: distance is 0 means no unsolved Blinks in the network
+    if (inverseDistanceFromUnsolved == 0 && amISolved) {
+      // Everyone is solved! Trigger WIN
+      // broadcastValue = COMM_WIN_GO;
     }
 
     // Display colors with matching feedback
@@ -342,7 +337,9 @@ void playLoop() {
         // if all faces are solved
         if (amISolved && HANDICAP_MODE == 1) {
           // All faces solved - show GREEN - ONLY FOR EASY MODE 1
-          setColorOnFace(GREEN, f);
+          setColorOnFace(dim(GREEN, brightness), f);
+          // Color distColor = makeColorHSB(16 * (MAX_SOLVE_DISTANCE - inverseDistanceFromUnsolved), 255, 255);
+          // setColorOnFace(distColor, f);
         }
         // Check if this face is fully solved (signature matches solution)
         else if (isFaceSolved(f) && HANDICAP_MODE == 2) {
@@ -369,9 +366,6 @@ void playLoop() {
     if(broadcastValue == COMM_WIN_GO) {
       setColor(MAGENTA);  // Win detected, transitioning
     }
-    // if(distanceFromUnsolved != 0) {
-    //     setColorOnFace(WHITE, 0);
-    // }
 
   }
   
@@ -410,18 +404,15 @@ void playLoop() {
 }
 
 void winLoop() {
+
+  // DEBUG SHOW BLUE IN WIN MODE
   setColor(BLUE);
+  // TODO:
   // 1 sec fade to off/black
   // 5 sec fireworks/sparkle
   // 1 second fade sparkle
-  // Infinite Code Reveal
+  // Infinite Code Reveal - blink in first color for first digit the number of times, then switch color and blink for next digit
 
-  // listen for reset clicks (5, no more, no less)
-  if(buttonMultiClicked()) {
-    if(buttonClickCount() == 5) {
-      broadcastValue = COMM_SETUP_GO;
-    }
-  }
 }
 
 // ===== PACKAGE PROCESSING =====
